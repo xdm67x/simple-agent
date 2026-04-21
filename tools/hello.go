@@ -2,7 +2,7 @@ package tools
 
 import (
 	"fmt"
-	"simple-agent/agent"
+	"github.com/xdm67x/simple-agent/agent"
 )
 
 type HelloTool struct{}

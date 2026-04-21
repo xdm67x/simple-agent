@@ -1,7 +1,7 @@
 package tools
 
 import (
-	"simple-agent/agent"
+	"github.com/xdm67x/simple-agent/agent"
 	"time"
 )
 
