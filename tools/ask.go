@@ -16,7 +16,7 @@ func (a *AskUserTool) Name() string {
 }
 
 func (a *AskUserTool) Description() string {
-	return "Ask the user a question and wait for their text answer."
+	return "Ask the user a question and wait for their text answer. Use this only when you need clarification that cannot be found via bash or other tools. Do not use this to request file contents or directory listings — use bash for that."
 }
 
 func (a *AskUserTool) Parameters() api.ToolFunctionParameters {

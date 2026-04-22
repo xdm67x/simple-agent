@@ -25,10 +25,19 @@ func NewAgent(model string) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	messages := make([]api.Message, 0)
+	if prompt, err := os.ReadFile("SYSTEM_PROMPT.md"); err == nil {
+		messages = append(messages, api.Message{
+			Role:    "system",
+			Content: string(prompt),
+		})
+	}
+
 	return &Agent{
 		Model:    model,
 		Registry: make(Registry),
-		Messages: make([]api.Message, 0),
+		Messages: messages,
 		client:   client,
 	}, nil
 }

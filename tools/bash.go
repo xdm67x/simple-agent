@@ -17,7 +17,7 @@ func (b *BashTool) Name() string {
 }
 
 func (b *BashTool) Description() string {
-	return "Execute a bash shell command and return its combined stdout and stderr."
+	return "Execute a bash shell command and return its combined stdout and stderr. Use this to explore the project structure (ls, find), read files (cat, head, tail), search content (grep), run tests, or check git status. Always use this tool first when the user asks about files, code, or project context."
 }
 
 func (b *BashTool) Parameters() api.ToolFunctionParameters {
