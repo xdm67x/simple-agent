@@ -44,7 +44,7 @@ func main() {
 	a.RegisterTool(&tools.BashTool{})
 	a.RegisterTool(&tools.AskUserTool{})
 
-	fmt.Println("Agent started. Type your messages below.")
+	fmt.Println("🤖 Agent démarré. Tapez vos messages ci-dessous.")
 
 	var stopSpinner, spinnerDone chan struct{}
 
@@ -83,7 +83,7 @@ func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	for {
-		fmt.Print("You: ")
+		fmt.Print("$> ")
 		if !scanner.Scan() {
 			break
 		}
@@ -99,6 +99,6 @@ func main() {
 			continue
 		}
 
-		fmt.Printf("\nAgent: %s\n\n", resp)
+		fmt.Printf("\n🤖 %s\n\n", resp)
 	}
 }
