@@ -1,5 +1,9 @@
 # Simple Agent
 
+<p align="center">
+  <img src="logo.svg" alt="Simple Agent Logo" width="200" height="200">
+</p>
+
 Simple Agent is an interactive general-purpose AI agent that runs locally on your computer, capable of executing software engineering tasks by taking direct action on your filesystem.
 
 ## Features
