@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +12,9 @@ import (
 	"github.com/xdm67x/simple-agent/agent"
 	"github.com/xdm67x/simple-agent/tools"
 )
+
+//go:embed SYSTEM_PROMPT.md
+var systemPrompt string
 
 func runSpinner(stop, done chan struct{}) {
 	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -35,7 +39,7 @@ func main() {
 		model = "gemma4:31b-cloud"
 	}
 
-	a, err := agent.NewAgent(model)
+	a, err := agent.NewAgent(model, systemPrompt)
 	if err != nil {
 		fmt.Printf("Failed to create agent: %v\n", err)
 		os.Exit(1)
@@ -91,6 +95,11 @@ func main() {
 		input := scanner.Text()
 		if input == "exit" || input == "quit" {
 			break
+		}
+		if input == "/new" {
+			a.Clear()
+			fmt.Println("Context cleared. Starting fresh.")
+			continue
 		}
 
 		resp, err := a.Run(input)

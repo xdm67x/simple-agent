@@ -17,6 +17,7 @@ type Agent struct {
 	Model           string
 	Registry        Registry
 	Messages        []api.Message
+	systemPrompt    string
 	client          *api.Client
 	OnThinkingStart func()
 	OnThinkingEnd   func()
@@ -24,30 +25,42 @@ type Agent struct {
 	OnToolResult    func(name string, result string)
 }
 
-func NewAgent(model string) (*Agent, error) {
+func NewAgent(model string, systemPrompt string) (*Agent, error) {
 	client, err := newOllamaClient()
 	if err != nil {
 		return nil, err
 	}
 
 	messages := make([]api.Message, 0)
-	if prompt, err := os.ReadFile("SYSTEM_PROMPT.md"); err == nil {
+	if systemPrompt != "" {
 		messages = append(messages, api.Message{
 			Role:    "system",
-			Content: string(prompt),
+			Content: systemPrompt,
 		})
 	}
 
 	return &Agent{
-		Model:    model,
-		Registry: make(Registry),
-		Messages: messages,
-		client:   client,
+		Model:        model,
+		Registry:     make(Registry),
+		Messages:     messages,
+		systemPrompt: systemPrompt,
+		client:       client,
 	}, nil
 }
 
 func (a *Agent) RegisterTool(t Tool) {
 	a.Registry[t.Name()] = t
+}
+
+func (a *Agent) Clear() {
+	messages := make([]api.Message, 0)
+	if a.systemPrompt != "" {
+		messages = append(messages, api.Message{
+			Role:    "system",
+			Content: a.systemPrompt,
+		})
+	}
+	a.Messages = messages
 }
 
 func (a *Agent) Run(userInput string) (string, error) {
