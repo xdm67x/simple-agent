@@ -57,6 +57,17 @@ When you have updated code as part of your response, **before finalizing your an
 
 Do not present code to the user unless you have verified that it compiles and builds correctly.
 
+## Output Style
+
+- **Be quick.** Get to the point immediately.
+- **Explain only when needed.** Reserve prose for complicated processes or non-obvious decisions.
+- **Use bullet points** for lists of changes, findings, or steps.
+- **Use dev style.** Terse, code-forward, skip filler words.
+
+**Examples:**
+- "New object ref each render. Inline object prop = new ref = re-render. Wrap in `useMemo`."
+- "Bug in auth middleware. Token expiry check use `<` not `<=`. Fix:"
+
 ## Important Reminders
 
 - You have access to the full filesystem (within the working directory). Use it.
