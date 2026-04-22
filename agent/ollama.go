@@ -1,85 +1,92 @@
 package agent
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
+	"time"
+
+	"github.com/ollama/ollama/api"
 )
 
-type ToolCall struct {
-	ID       string `json:"id"`
-	Function string `json:"function"`
-	Args     string `json:"args"`
-}
-
-type Message struct {
-	Role      string     `json:"role"`
-	Content   string     `json:"content"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string    `json:"tool_call_id,omitempty"`
-}
-
-type ToolDef struct {
-	Type     string `json:"type"`
-	Function struct {
-		Name        string     `json:"name"`
-		Description string     `json:"description"`
-		Parameters  ToolParams `json:"parameters"`
-	} `json:"function"`
-}
-
-type ChatRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-	Tools    []ToolDef `json:"tools,omitempty"`
-}
-
-type ChatResponse struct {
-	Message Message `json:"message"`
-}
-
-func CallLLM(messages []Message, tools []Tool) (Message, error) {
-	url := os.Getenv("OLLAMA_CLOUD_URL")
-	if url == "" {
-		url = "https://api.ollama.cloud/chat"
+func newOllamaClient() (*api.Client, error) {
+	host := os.Getenv("OLLAMA_HOST")
+	if host == "" {
+		host = "https://ollama.com"
 	}
 
-	toolDefs := make([]ToolDef, 0, len(tools))
-	for _, t := range tools {
-		td := ToolDef{Type: "function"}
-		td.Function.Name = t.Name()
-		td.Function.Description = t.Description()
-		td.Function.Parameters = t.Parameters()
-		toolDefs = append(toolDefs, td)
-	}
-
-	reqBody := ChatRequest{
-		Model:    "llama3",
-		Messages: messages,
-		Tools:    toolDefs,
-	}
-
-	jsonData, err := json.Marshal(reqBody)
+	baseURL, err := url.Parse(host)
 	if err != nil {
-		return Message{}, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, fmt.Errorf("invalid OLLAMA_HOST: %w", err)
 	}
 
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return Message{}, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
+	httpClient := &http.Client{Timeout: 120 * time.Second}
 
-	if resp.StatusCode != http.StatusOK {
-		return Message{}, fmt.Errorf("api returned non-OK status: %d", resp.StatusCode)
-	}
-
-	var chatResp ChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return Message{}, fmt.Errorf("failed to decode response: %w", err)
+	apiKey := os.Getenv("OLLAMA_API_KEY")
+	if apiKey != "" {
+		httpClient.Transport = &authTransport{
+			base:   http.DefaultTransport,
+			token:  apiKey,
+		}
 	}
 
-	return chatResp.Message, nil
+	return api.NewClient(baseURL, httpClient), nil
+}
+
+type authTransport struct {
+	base  http.RoundTripper
+	token string
+}
+
+func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.Header.Set("Authorization", "Bearer "+t.token)
+	return t.base.RoundTrip(req)
+}
+
+// safetyCheck asks the LLM whether a bash command is safe to execute without user confirmation.
+// It returns true if the LLM replies "yes", false otherwise.
+func safetyCheck(client *api.Client, model, command string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req := &api.ChatRequest{
+		Model: model,
+		Messages: []api.Message{
+			{
+				Role:    "system",
+				Content: "You are a security gatekeeper. A bash command will be provided. Determine if it is safe to execute automatically without user confirmation. A command is UNSAFE if it modifies, deletes, overwrites files, changes system state, installs software, or accesses sensitive data. Safe commands are read-only (e.g., ls, cat, grep, echo, pwd, df, ps). Answer only 'yes' if safe, or 'no' if unsafe. Do not provide any other output.",
+			},
+			{
+				Role:    "user",
+				Content: command,
+			},
+		},
+		Stream: boolPtr(false),
+	}
+
+	var answer string
+	var gotAnswer bool
+	respFunc := func(resp api.ChatResponse) error {
+		if resp.Message.Content != "" {
+			answer = strings.TrimSpace(strings.ToLower(resp.Message.Content))
+			gotAnswer = true
+		}
+		return nil
+	}
+
+	if err := client.Chat(ctx, req, respFunc); err != nil {
+		return false, err
+	}
+	if !gotAnswer {
+		return false, fmt.Errorf("safety check returned empty response")
+	}
+
+	return answer == "yes", nil
+}
+
+func boolPtr(b bool) *bool {
+	return &b
 }

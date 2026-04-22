@@ -4,15 +4,25 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+
 	"github.com/xdm67x/simple-agent/agent"
 	"github.com/xdm67x/simple-agent/tools"
 )
 
 func main() {
-	a := agent.NewAgent("llama3")
+	model := os.Getenv("OLLAMA_MODEL")
+	if model == "" {
+		model = "gemma4:31b-cloud"
+	}
 
-	a.RegisterTool(&tools.HelloTool{})
-	a.RegisterTool(&tools.DateTool{})
+	a, err := agent.NewAgent(model)
+	if err != nil {
+		fmt.Printf("Failed to create agent: %v\n", err)
+		os.Exit(1)
+	}
+
+	a.RegisterTool(&tools.BashTool{})
+	a.RegisterTool(&tools.AskUserTool{})
 
 	fmt.Println("Agent started. Type your messages below.")
 	scanner := bufio.NewScanner(os.Stdin)

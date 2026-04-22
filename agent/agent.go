@@ -1,8 +1,14 @@
 package agent
 
 import (
-	"encoding/json"
+	"bufio"
+	"context"
 	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/ollama/ollama/api"
 )
 
 type Registry map[string]Tool
@@ -10,15 +16,21 @@ type Registry map[string]Tool
 type Agent struct {
 	Model    string
 	Registry Registry
-	Messages []Message
+	Messages []api.Message
+	client   *api.Client
 }
 
-func NewAgent(model string) *Agent {
+func NewAgent(model string) (*Agent, error) {
+	client, err := newOllamaClient()
+	if err != nil {
+		return nil, err
+	}
 	return &Agent{
 		Model:    model,
 		Registry: make(Registry),
-		Messages: make([]Message, 0),
-	}
+		Messages: make([]api.Message, 0),
+		client:   client,
+	}, nil
 }
 
 func (a *Agent) RegisterTool(t Tool) {
@@ -26,7 +38,7 @@ func (a *Agent) RegisterTool(t Tool) {
 }
 
 func (a *Agent) Run(userInput string) (string, error) {
-	a.Messages = append(a.Messages, Message{Role: "user", Content: userInput})
+	a.Messages = append(a.Messages, api.Message{Role: "user", Content: userInput})
 
 	tools := make([]Tool, 0, len(a.Registry))
 	for _, t := range a.Registry {
@@ -34,7 +46,7 @@ func (a *Agent) Run(userInput string) (string, error) {
 	}
 
 	for {
-		resp, err := CallLLM(a.Messages, tools)
+		resp, err := a.callChat(tools)
 		if err != nil {
 			return "", err
 		}
@@ -46,32 +58,104 @@ func (a *Agent) Run(userInput string) (string, error) {
 		}
 
 		for _, tc := range resp.ToolCalls {
-			tool, ok := a.Registry[tc.Function]
+			tool, ok := a.Registry[tc.Function.Name]
 			if !ok {
-				a.Messages = append(a.Messages, Message{
+				a.Messages = append(a.Messages, api.Message{
 					Role:       "tool",
-					Content:    fmt.Sprintf("Error: Tool %s not found", tc.Function),
+					Content:    fmt.Sprintf("Error: Tool %s not found", tc.Function.Name),
 					ToolCallID: tc.ID,
 				})
 				continue
 			}
 
-			var args map[string]any
-			if err := json.Unmarshal([]byte(tc.Args), &args); err != nil {
-				a.Messages = append(a.Messages, Message{
-					Role:       "tool",
-					Content:    fmt.Sprintf("Error parsing arguments for tool %s: %v", tc.Function, err),
-					ToolCallID: tc.ID,
-				})
-				continue
+			args := tc.Function.Arguments.ToMap()
+
+			// Bash safety gate
+			if tool.Name() == "bash" {
+				cmdStr, _ := args["command"].(string)
+				if cmdStr != "" {
+					safe, err := safetyCheck(a.client, a.Model, cmdStr)
+					if err != nil {
+						a.Messages = append(a.Messages, api.Message{
+							Role:       "tool",
+							Content:    fmt.Sprintf("Error during safety check: %v", err),
+							ToolCallID: tc.ID,
+						})
+						continue
+					}
+					if !safe {
+						fmt.Printf("\nThe agent wants to run: %s\nExecute? (y/n): ", cmdStr)
+						reader := bufio.NewReader(os.Stdin)
+						answer, _ := reader.ReadString('\n')
+						answer = strings.TrimSpace(strings.ToLower(answer))
+						if answer != "y" && answer != "yes" {
+							a.Messages = append(a.Messages, api.Message{
+								Role:       "tool",
+								Content:    "User declined execution",
+								ToolCallID: tc.ID,
+							})
+							continue
+						}
+					}
+				}
 			}
 
 			result := tool.Execute(args)
-			a.Messages = append(a.Messages, Message{
+			result = compressOutput(result)
+
+			a.Messages = append(a.Messages, api.Message{
 				Role:       "tool",
 				Content:    result,
 				ToolCallID: tc.ID,
 			})
 		}
 	}
+}
+
+func (a *Agent) callChat(tools []Tool) (api.Message, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	apiTools := make([]api.Tool, 0, len(tools))
+	for _, t := range tools {
+		apiTools = append(apiTools, api.Tool{
+			Type: "function",
+			Function: api.ToolFunction{
+				Name:        t.Name(),
+				Description: t.Description(),
+				Parameters:  t.Parameters(),
+			},
+		})
+	}
+
+	stream := false
+	req := &api.ChatRequest{
+		Model:    a.Model,
+		Messages: a.Messages,
+		Tools:    apiTools,
+		Stream:   &stream,
+	}
+
+	var final api.Message
+	respFunc := func(resp api.ChatResponse) error {
+		final = resp.Message
+		return nil
+	}
+
+	if err := a.client.Chat(ctx, req, respFunc); err != nil {
+		return api.Message{}, fmt.Errorf("chat failed: %w", err)
+	}
+
+	return final, nil
+}
+
+func compressOutput(s string) string {
+	const maxLen = 3000
+	if len(s) <= maxLen {
+		return s
+	}
+	head := s[:1500]
+	tail := s[len(s)-1500:]
+	truncated := len(s) - 3000
+	return fmt.Sprintf("%s\n\n[...truncated %d chars...]\n\n%s", head, truncated, tail)
 }
