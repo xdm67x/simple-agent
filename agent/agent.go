@@ -14,10 +14,14 @@ import (
 type Registry map[string]Tool
 
 type Agent struct {
-	Model    string
-	Registry Registry
-	Messages []api.Message
-	client   *api.Client
+	Model           string
+	Registry        Registry
+	Messages        []api.Message
+	client          *api.Client
+	OnThinkingStart func()
+	OnThinkingEnd   func()
+	OnToolCall      func(name string, args map[string]any)
+	OnToolResult    func(name string, result string)
 }
 
 func NewAgent(model string) (*Agent, error) {
@@ -55,7 +59,13 @@ func (a *Agent) Run(userInput string) (string, error) {
 	}
 
 	for {
+		if a.OnThinkingStart != nil {
+			a.OnThinkingStart()
+		}
 		resp, err := a.callChat(tools)
+		if a.OnThinkingEnd != nil {
+			a.OnThinkingEnd()
+		}
 		if err != nil {
 			return "", err
 		}
@@ -78,6 +88,10 @@ func (a *Agent) Run(userInput string) (string, error) {
 			}
 
 			args := tc.Function.Arguments.ToMap()
+
+			if a.OnToolCall != nil {
+				a.OnToolCall(tool.Name(), args)
+			}
 
 			// Bash safety gate
 			if tool.Name() == "bash" {
@@ -111,6 +125,10 @@ func (a *Agent) Run(userInput string) (string, error) {
 
 			result := tool.Execute(args)
 			result = compressOutput(result)
+
+			if a.OnToolResult != nil {
+				a.OnToolResult(tool.Name(), result)
+			}
 
 			a.Messages = append(a.Messages, api.Message{
 				Role:       "tool",
