@@ -23,7 +23,7 @@ func runSpinner(stop, done chan struct{}) {
 			close(done)
 			return
 		case <-time.After(100 * time.Millisecond):
-			fmt.Printf("\r  %s Réfléchit...", frames[i])
+			fmt.Printf("\r  %s Thinking...", frames[i])
 			i = (i + 1) % len(frames)
 		}
 	}
@@ -44,7 +44,7 @@ func main() {
 	a.RegisterTool(&tools.BashTool{})
 	a.RegisterTool(&tools.AskUserTool{})
 
-	fmt.Println("🤖 Agent démarré. Tapez vos messages ci-dessous.")
+	fmt.Println("🤖 Agent started. Type your messages below.")
 
 	var stopSpinner, spinnerDone chan struct{}
 
@@ -65,7 +65,7 @@ func main() {
 
 	a.OnToolCall = func(name string, args map[string]any) {
 		argsJSON, _ := json.Marshal(args)
-		fmt.Printf("\n🔧 Outil  → %s(%s)\n", name, string(argsJSON))
+		fmt.Printf("\n🔧 Tool   → %s(%s)\n", name, string(argsJSON))
 	}
 
 	a.OnToolResult = func(name string, result string) {
@@ -77,7 +77,7 @@ func main() {
 		if len(summary) > 80 {
 			summary = summary[:77] + "..."
 		}
-		fmt.Printf("✅ Résultat ← %s: %s\n", name, summary)
+		fmt.Printf("✅ Result ← %s: %s\n", name, summary)
 	}
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -95,7 +95,7 @@ func main() {
 
 		resp, err := a.Run(input)
 		if err != nil {
-			fmt.Printf("\n❌ Erreur: %v\n\n", err)
+			fmt.Printf("\n❌ Error: %v\n\n", err)
 			continue
 		}
 
