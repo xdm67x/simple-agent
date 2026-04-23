@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/glamour"
 	"github.com/xdm67x/simple-agent/agent"
 	"github.com/xdm67x/simple-agent/tools"
 )
@@ -47,6 +48,15 @@ func main() {
 
 	a.RegisterTool(&tools.BashTool{})
 	a.RegisterTool(&tools.AskUserTool{})
+
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(100),
+	)
+	if err != nil {
+		fmt.Printf("Failed to create markdown renderer: %v\n", err)
+		os.Exit(1)
+	}
 
 	fmt.Println("🤖 Agent started. Type your messages below.")
 
@@ -108,6 +118,12 @@ func main() {
 			continue
 		}
 
-		fmt.Printf("\n🤖 %s\n\n", resp)
+		rendered, err := renderer.Render(resp)
+		if err != nil {
+			fmt.Printf("\n🤖 %s\n\n", resp)
+			continue
+		}
+
+		fmt.Printf("\n🤖\n%s\n", rendered)
 	}
 }
