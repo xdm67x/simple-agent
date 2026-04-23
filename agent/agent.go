@@ -24,6 +24,7 @@ type Agent struct {
 	OnToolCall      func(name string, args map[string]any)
 	OnToolResult    func(name string, result string)
 	OnSafetyCheck   func(cmd string) bool
+	OnAskUser       func(question string) string
 }
 
 func NewAgent(model string, systemPrompt string) (*Agent, error) {
@@ -143,7 +144,13 @@ func (a *Agent) Run(userInput string) (string, error) {
 				}
 			}
 
-			result := tool.Execute(args)
+			var result string
+			if tool.Name() == "ask_user" && a.OnAskUser != nil {
+				q, _ := args["question"].(string)
+				result = a.OnAskUser(q)
+			} else {
+				result = tool.Execute(args)
+			}
 			result = compressOutput(result)
 
 			if a.OnToolResult != nil {

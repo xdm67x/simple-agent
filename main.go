@@ -38,6 +38,10 @@ type (
 		cmd  string
 		resp chan bool
 	}
+	askUserMsg struct {
+		question string
+		resp     chan string
+	}
 )
 
 type model struct {
@@ -53,6 +57,7 @@ type model struct {
 	status   string
 
 	awaitingSafetyCheck *safetyCheckMsg
+	awaitingAskUser     *askUserMsg
 	eventCh             chan tea.Msg
 
 	width  int
@@ -158,6 +163,11 @@ func (m model) runAgent(input string) tea.Cmd {
 			m.eventCh <- req
 			return <-req.resp
 		}
+		m.agent.OnAskUser = func(question string) string {
+			req := askUserMsg{question: question, resp: make(chan string)}
+			m.eventCh <- req
+			return <-req.resp
+		}
 
 		resp, err := m.agent.Run(input)
 		if err != nil {
@@ -243,6 +253,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = fmt.Sprintf("Safety check: %s", msg.cmd)
 		return m, waitForEvent(m.eventCh)
 
+	case askUserMsg:
+		m.awaitingAskUser = &msg
+		m.status = fmt.Sprintf("Question: %s", msg.question)
+		m.addMessage("agent", msg.question)
+		m.textarea.Placeholder = "Type your answer and press Enter..."
+		return m, waitForEvent(m.eventCh)
+
 	case agentResponseMsg:
 		m.addMessage("agent", string(msg))
 		return m, waitForEvent(m.eventCh)
@@ -260,6 +277,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.awaitingAskUser != nil {
+			switch msg.Type {
+			case tea.KeyCtrlC:
+				m.awaitingAskUser.resp <- "User cancelled"
+				m.awaitingAskUser = nil
+				m.textarea.SetValue("")
+				m.textarea.Placeholder = "Send a message..."
+				return m, tea.Quit
+			case tea.KeyEnter:
+				answer := strings.TrimSpace(m.textarea.Value())
+				m.awaitingAskUser.resp <- answer
+				m.awaitingAskUser = nil
+				m.textarea.SetValue("")
+				m.textarea.Placeholder = "Send a message..."
+				m.addMessage("user", answer)
+				return m, waitForEvent(m.eventCh)
+			}
+			var cmd tea.Cmd
+			m.textarea, cmd = m.textarea.Update(msg)
+			return m, cmd
+		}
+
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			return m, tea.Quit
@@ -319,6 +358,11 @@ func (m model) View() string {
 			Bold(true).
 			Foreground(lipgloss.Color("#FF0000")).
 			Render(fmt.Sprintf("Safety check: %s  [Approve? y/n]", m.awaitingSafetyCheck.cmd))
+	} else if m.awaitingAskUser != nil {
+		status = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#F4D03F")).
+			Render(fmt.Sprintf("Question: %s  [Type your answer and press Enter]", m.awaitingAskUser.question))
 	} else if m.thinking {
 		status = statusStyle.Render(m.spinner.View() + " " + m.status)
 	} else {
