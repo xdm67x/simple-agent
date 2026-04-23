@@ -23,6 +23,7 @@ type Agent struct {
 	OnThinkingEnd   func()
 	OnToolCall      func(name string, args map[string]any)
 	OnToolResult    func(name string, result string)
+	OnSafetyCheck   func(cmd string) bool
 }
 
 func NewAgent(model string, systemPrompt string) (*Agent, error) {
@@ -119,20 +120,26 @@ func (a *Agent) Run(userInput string) (string, error) {
 						})
 						continue
 					}
-					if !safe {
+			if !safe {
+					var approved bool
+					if a.OnSafetyCheck != nil {
+						approved = a.OnSafetyCheck(cmdStr)
+					} else {
 						fmt.Printf("\nThe agent wants to run: %s\nExecute? (y/n): ", cmdStr)
 						reader := bufio.NewReader(os.Stdin)
 						answer, _ := reader.ReadString('\n')
 						answer = strings.TrimSpace(strings.ToLower(answer))
-						if answer != "y" && answer != "yes" {
-							a.Messages = append(a.Messages, api.Message{
-								Role:       "tool",
-								Content:    "User declined execution",
-								ToolCallID: tc.ID,
-							})
-							continue
-						}
+						approved = answer == "y" || answer == "yes"
 					}
+					if !approved {
+						a.Messages = append(a.Messages, api.Message{
+							Role:       "tool",
+							Content:    "User declined execution",
+							ToolCallID: tc.ID,
+						})
+						continue
+					}
+				}
 				}
 			}
 
