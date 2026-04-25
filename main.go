@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -64,8 +65,52 @@ type model struct {
 	height int
 }
 
+type config struct {
+	Model string `json:"model"`
+}
+
+func configPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home + "/.simple-agent/config.json"
+}
+
+func loadConfig() config {
+	path := configPath()
+	if path == "" {
+		return config{}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return config{}
+	}
+	var c config
+	_ = json.Unmarshal(data, &c)
+	return c
+}
+
+func saveConfig(c config) error {
+	path := configPath()
+	if path == "" {
+		return fmt.Errorf("unable to determine config path")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
 func initialModel() (*model, error) {
 	modelName := os.Getenv("OLLAMA_MODEL")
+	if modelName == "" {
+		modelName = loadConfig().Model
+	}
 	if modelName == "" {
 		modelName = "gemma4:31b-cloud"
 	}
@@ -334,7 +379,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				newModel := strings.TrimSpace(strings.TrimPrefix(input, "/model "))
 				if newModel != "" {
 					m.agent.SetModel(newModel)
-					m.addMessage("agent", fmt.Sprintf("Switched to model: %s", newModel))
+					if err := saveConfig(config{Model: newModel}); err != nil {
+						m.addMessage("error", fmt.Sprintf("Failed to save config: %v", err))
+					} else {
+						m.addMessage("agent", fmt.Sprintf("Switched to model: %s", newModel))
+					}
 				}
 				m.textarea.SetValue("")
 				return m, nil
