@@ -128,15 +128,18 @@ func initialModel() (*model, error) {
 	}
 
 	ta := textarea.New()
-	ta.Placeholder = "Send a message..."
-	ta.Prompt = "┃ "
+	ta.Placeholder = "Message..."
+	ta.Prompt = "> "
 	ta.Focus()
 	ta.CharLimit = 0
-	ta.SetHeight(3)
-	ta.MaxHeight = 5
+	ta.SetHeight(2)
+	ta.MaxHeight = 4
+	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	ta.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 
 	vp := viewport.New(80, 20)
-	vp.SetContent("Welcome to Simple Agent! Type a message and press Enter to send.")
+	vp.SetContent("")
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -156,21 +159,19 @@ func (m *model) addMessage(role, content string) {
 	var rendered string
 	switch role {
 	case "user":
-		label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4")).Render("You")
-		rendered = label + "\n" + content
+		prefix := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("› ")
+		rendered = prefix + content
 	case "agent":
 		out, err := m.renderer.Render(content)
 		if err != nil {
 			out = content
 		}
-		out = strings.Trim(out, "\n")
-		label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#04B575")).Render("Agent")
-		rendered = label + "\n" + out
+		rendered = strings.Trim(out, "\n")
 	case "error":
-		label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF0000")).Render("Error")
-		rendered = label + " " + content
+		prefix := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("! ")
+		rendered = prefix + lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(content)
 	case "tool":
-		rendered = lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(content)
+		rendered = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Italic(true).Render("· " + content)
 	}
 	m.messages = append(m.messages, rendered)
 	m.viewport.SetContent(strings.Join(m.messages, "\n\n"))
@@ -411,55 +412,40 @@ func (m model) View() string {
 		return "Loading..."
 	}
 
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#FAFAFA")).
-		Background(lipgloss.Color("#7D56F4")).
-		Padding(0, 1).
-		Width(m.width)
-
-	helpStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#626262")).
-		Width(m.width)
-
-	statusStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#04B575")).
-		Width(m.width)
-
-	title := titleStyle.Render("🤖 Simple Agent")
+	separator := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("8")).
+		Render(strings.Repeat("─", m.width))
 
 	var status string
 	if m.awaitingSafetyCheck != nil {
 		status = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#FF0000")).
-			Render(fmt.Sprintf("Safety check: %s  [Approve? y/n]", m.awaitingSafetyCheck.cmd))
+			Foreground(lipgloss.Color("9")).
+			Render(fmt.Sprintf("approve: %s [y/n]", m.awaitingSafetyCheck.cmd))
 	} else if m.awaitingAskUser != nil {
 		status = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#F4D03F")).
-			Render(fmt.Sprintf("Question: %s  [Type your answer and press Enter]", m.awaitingAskUser.question))
+			Foreground(lipgloss.Color("11")).
+			Render(fmt.Sprintf("reply: %s", m.awaitingAskUser.question))
 	} else if m.thinking {
-		status = statusStyle.Render(m.spinner.View() + " " + m.status)
-	} else {
-		status = statusStyle.Render(m.status)
+		status = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("8")).
+			Render(m.spinner.View() + " ...")
 	}
 
-	modelStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#7D56F4")).
-		Width(m.width)
+	help := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("8")).
+		Render(fmt.Sprintf("enter send · shift+enter newline · /new clear · /model models · ctrl+c quit · %s", m.agent.Model))
 
-	help := helpStyle.Render("enter: send • shift+enter: newline • /new: clear • /model: models • ctrl+c: quit")
-	modelInfo := modelStyle.Render(fmt.Sprintf("Model: %s", m.agent.Model))
-
-	return lipgloss.JoinVertical(lipgloss.Left,
-		title,
+	components := []string{
 		m.viewport.View(),
-		status,
+		separator,
 		m.textarea.View(),
-		modelInfo,
-		help,
-	)
+	}
+	if status != "" {
+		components = append(components, status)
+	}
+	components = append(components, help)
+
+	return lipgloss.JoinVertical(lipgloss.Left, components...)
 }
 
 func main() {
