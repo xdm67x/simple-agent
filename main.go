@@ -60,7 +60,9 @@ type model struct {
 
 	awaitingSafetyCheck *safetyCheckMsg
 	awaitingAskUser     *askUserMsg
-	eventCh             chan tea.Msg
+	drawerTextarea      textarea.Model
+
+	eventCh chan tea.Msg
 
 	width  int
 	height int
@@ -101,6 +103,20 @@ func saveConfig(c agent.Config) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0o644)
+}
+
+func newDrawerTextarea() textarea.Model {
+	ta := textarea.New()
+	ta.Placeholder = "Type your answer..."
+	ta.Prompt = "> "
+	ta.Focus()
+	ta.CharLimit = 0
+	ta.SetHeight(2)
+	ta.MaxHeight = 4
+	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	ta.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	return ta
 }
 
 func initialModel() (*model, error) {
@@ -145,13 +161,14 @@ func initialModel() (*model, error) {
 	sp.Spinner = spinner.Dot
 
 	return &model{
-		agent:    a,
-		renderer: renderer,
-		config:   cfg,
-		textarea: ta,
-		viewport: vp,
-		spinner:  sp,
-		eventCh:  make(chan tea.Msg, 100),
+		agent:          a,
+		renderer:       renderer,
+		config:         cfg,
+		textarea:       ta,
+		viewport:       vp,
+		spinner:        sp,
+		drawerTextarea: newDrawerTextarea(),
+		eventCh:        make(chan tea.Msg, 100),
 	}, nil
 }
 
@@ -227,6 +244,7 @@ func (m model) Init() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Drawer is active: safety check
 	if m.awaitingSafetyCheck != nil {
 		switch msg := msg.(type) {
 		case tea.KeyMsg:
@@ -234,15 +252,62 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.awaitingSafetyCheck.resp <- false
 				return m, tea.Quit
 			}
+			if msg.Type == tea.KeyEsc {
+				m.awaitingSafetyCheck.resp <- false
+				m.awaitingSafetyCheck = nil
+				m.recalcViewport()
+				return m, waitForEvent(m.eventCh)
+			}
 			if strings.ToLower(msg.String()) == "y" {
 				m.awaitingSafetyCheck.resp <- true
-			} else {
-				m.awaitingSafetyCheck.resp <- false
+				m.awaitingSafetyCheck = nil
+				m.recalcViewport()
+				return m, waitForEvent(m.eventCh)
 			}
-			m.awaitingSafetyCheck = nil
-			return m, waitForEvent(m.eventCh)
+			if strings.ToLower(msg.String()) == "n" {
+				m.awaitingSafetyCheck.resp <- false
+				m.awaitingSafetyCheck = nil
+				m.recalcViewport()
+				return m, waitForEvent(m.eventCh)
+			}
+			return m, nil
 		default:
 			return m, nil
+		}
+	}
+
+	// Drawer is active: ask user
+	if m.awaitingAskUser != nil {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.Type {
+			case tea.KeyCtrlC:
+				m.awaitingAskUser.resp <- "User cancelled"
+				m.awaitingAskUser = nil
+				m.drawerTextarea.SetValue("")
+				return m, tea.Quit
+			case tea.KeyEsc:
+				m.awaitingAskUser.resp <- "User cancelled"
+				m.awaitingAskUser = nil
+				m.drawerTextarea.SetValue("")
+				m.recalcViewport()
+				return m, waitForEvent(m.eventCh)
+			case tea.KeyEnter:
+				answer := strings.TrimSpace(m.drawerTextarea.Value())
+				m.awaitingAskUser.resp <- answer
+				m.awaitingAskUser = nil
+				m.drawerTextarea.SetValue("")
+				m.recalcViewport()
+				m.addMessage("user", answer)
+				return m, waitForEvent(m.eventCh)
+			}
+			var cmd tea.Cmd
+			m.drawerTextarea, cmd = m.drawerTextarea.Update(msg)
+			return m, cmd
+		default:
+			var cmd tea.Cmd
+			m.drawerTextarea, cmd = m.drawerTextarea.Update(msg)
+			return m, cmd
 		}
 	}
 
@@ -251,12 +316,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.viewport.Width = msg.Width
-		if msg.Height > 6 {
-			m.viewport.Height = msg.Height - 6
-		} else {
-			m.viewport.Height = 1
-		}
 		m.textarea.SetWidth(msg.Width)
+		m.drawerTextarea.SetWidth(msg.Width - 4)
+		m.recalcViewport()
 		return m, nil
 
 	case thinkingStartMsg:
@@ -291,13 +353,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case safetyCheckMsg:
 		m.awaitingSafetyCheck = &msg
 		m.status = fmt.Sprintf("Safety check: %s", msg.cmd)
+		m.recalcViewport()
 		return m, waitForEvent(m.eventCh)
 
 	case askUserMsg:
 		m.awaitingAskUser = &msg
 		m.status = fmt.Sprintf("Question: %s", msg.question)
 		m.addMessage("agent", msg.question)
-		m.textarea.Placeholder = "Type your answer and press Enter..."
+		m.drawerTextarea.SetValue("")
+		m.drawerTextarea.Focus()
+		m.recalcViewport()
 		return m, waitForEvent(m.eventCh)
 
 	case agentResponseMsg:
@@ -317,28 +382,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		if m.awaitingAskUser != nil {
-			switch msg.Type {
-			case tea.KeyCtrlC:
-				m.awaitingAskUser.resp <- "User cancelled"
-				m.awaitingAskUser = nil
-				m.textarea.SetValue("")
-				m.textarea.Placeholder = "Send a message..."
-				return m, tea.Quit
-			case tea.KeyEnter:
-				answer := strings.TrimSpace(m.textarea.Value())
-				m.awaitingAskUser.resp <- answer
-				m.awaitingAskUser = nil
-				m.textarea.SetValue("")
-				m.textarea.Placeholder = "Send a message..."
-				m.addMessage("user", answer)
-				return m, waitForEvent(m.eventCh)
-			}
-			var cmd tea.Cmd
-			m.textarea, cmd = m.textarea.Update(msg)
-			return m, cmd
-		}
-
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			return m, tea.Quit
@@ -407,6 +450,122 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m *model) recalcViewport() {
+	drawerHeight := m.drawerHeight()
+	inputHeight := 3
+	if m.awaitingSafetyCheck != nil || m.awaitingAskUser != nil {
+		inputHeight = 0
+	}
+	helpHeight := 1
+	sepHeight := 1
+	available := m.height - drawerHeight - inputHeight - helpHeight - sepHeight
+	if available < 1 {
+		available = 1
+	}
+	m.viewport.Height = available
+}
+
+func (m model) drawerHeight() int {
+	if m.awaitingSafetyCheck != nil {
+		return 7
+	}
+	if m.awaitingAskUser != nil {
+		return 7 + m.drawerTextarea.Height()
+	}
+	return 0
+}
+
+func (m model) drawerView() string {
+	if m.awaitingSafetyCheck != nil {
+		return m.safetyDrawerView()
+	}
+	if m.awaitingAskUser != nil {
+		return m.questionDrawerView()
+	}
+	return ""
+}
+
+func (m model) safetyDrawerView() string {
+	width := m.width - 2
+	if width < 10 {
+		width = 10
+	}
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("0")).
+		Background(lipgloss.Color("3")).
+		Padding(0, 1).
+		Width(width).
+		Align(lipgloss.Center)
+
+	boxStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("3")).
+		Padding(0, 1).
+		Width(m.width)
+
+	cmdStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("11")).
+		Italic(true)
+
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("8"))
+
+	cmd := m.awaitingSafetyCheck.cmd
+	if len(cmd) > width-4 {
+		cmd = cmd[:width-7] + "..."
+	}
+
+	title := titleStyle.Render("Permission Required")
+	content := cmdStyle.Render(cmd)
+	help := helpStyle.Render("[y] approve  [n] decline  [esc] cancel")
+
+	inner := lipgloss.JoinVertical(lipgloss.Left, title, "", content, "", help)
+	return boxStyle.Render(inner)
+}
+
+func (m model) questionDrawerView() string {
+	width := m.width - 2
+	if width < 10 {
+		width = 10
+	}
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("0")).
+		Background(lipgloss.Color("12")).
+		Padding(0, 1).
+		Width(width).
+		Align(lipgloss.Center)
+
+	boxStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("12")).
+		Padding(0, 1).
+		Width(m.width)
+
+	questionStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("15")).
+		Bold(true)
+
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("8"))
+
+	q := m.awaitingAskUser.question
+	if len(q) > width-4 {
+		q = q[:width-7] + "..."
+	}
+
+	title := titleStyle.Render("Agent Question")
+	question := questionStyle.Render(q)
+	input := m.drawerTextarea.View()
+	help := helpStyle.Render("enter submit · esc cancel")
+
+	inner := lipgloss.JoinVertical(lipgloss.Left, title, "", question, input, help)
+	return boxStyle.Render(inner)
+}
+
 func (m model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "Loading..."
@@ -417,15 +576,7 @@ func (m model) View() string {
 		Render(strings.Repeat("─", m.width))
 
 	var status string
-	if m.awaitingSafetyCheck != nil {
-		status = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("9")).
-			Render(fmt.Sprintf("approve: %s [y/n]", m.awaitingSafetyCheck.cmd))
-	} else if m.awaitingAskUser != nil {
-		status = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("11")).
-			Render(fmt.Sprintf("reply: %s", m.awaitingAskUser.question))
-	} else if m.thinking {
+	if m.thinking {
 		status = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("8")).
 			Render(m.spinner.View() + " ...")
@@ -438,8 +589,14 @@ func (m model) View() string {
 	components := []string{
 		m.viewport.View(),
 		separator,
-		m.textarea.View(),
 	}
+
+	if drawer := m.drawerView(); drawer != "" {
+		components = append(components, drawer)
+	} else {
+		components = append(components, m.textarea.View())
+	}
+
 	if status != "" {
 		components = append(components, status)
 	}
