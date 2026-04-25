@@ -6,14 +6,21 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/ollama/ollama/api"
 )
 
-func newOllamaClient() (*api.Client, error) {
-	host := os.Getenv("OLLAMA_HOST")
+type ollamaProvider struct {
+	client *api.Client
+	model  string
+}
+
+func newOllamaProvider(model string, cfg ProviderConfig) (*ollamaProvider, error) {
+	host := cfg.Host
+	if host == "" {
+		host = os.Getenv("OLLAMA_HOST")
+	}
 	if host == "" {
 		host = "https://ollama.com"
 	}
@@ -25,15 +32,133 @@ func newOllamaClient() (*api.Client, error) {
 
 	httpClient := &http.Client{Timeout: 120 * time.Second}
 
-	apiKey := os.Getenv("OLLAMA_API_KEY")
+	apiKey := cfg.APIKey
+	if apiKey == "" {
+		apiKey = os.Getenv("OLLAMA_API_KEY")
+	}
 	if apiKey != "" {
 		httpClient.Transport = &authTransport{
-			base:   http.DefaultTransport,
-			token:  apiKey,
+			base:  http.DefaultTransport,
+			token: apiKey,
 		}
 	}
 
-	return api.NewClient(baseURL, httpClient), nil
+	return &ollamaProvider{
+		client: api.NewClient(baseURL, httpClient),
+		model:  model,
+	}, nil
+}
+
+func (p *ollamaProvider) Chat(ctx context.Context, req ChatRequest) (Message, error) {
+	messages := make([]api.Message, len(req.Messages))
+	for i, m := range req.Messages {
+		messages[i] = toOllamaMessage(m)
+	}
+
+	apiTools := make([]api.Tool, len(req.Tools))
+	for i, t := range req.Tools {
+		apiTools[i] = api.Tool{
+			Type: t.Type,
+			Function: api.ToolFunction{
+				Name:        t.Function.Name,
+				Description: t.Function.Description,
+				Parameters:  toOllamaParams(t.Function.Parameters),
+			},
+		}
+	}
+
+	stream := false
+	chatReq := &api.ChatRequest{
+		Model:    p.model,
+		Messages: messages,
+		Tools:    apiTools,
+		Stream:   &stream,
+	}
+
+	var final api.Message
+	respFunc := func(resp api.ChatResponse) error {
+		final = resp.Message
+		return nil
+	}
+
+	if err := p.client.Chat(ctx, chatReq, respFunc); err != nil {
+		return Message{}, fmt.Errorf("chat failed: %w", err)
+	}
+
+	return fromOllamaMessage(final), nil
+}
+
+func (p *ollamaProvider) ListModels(ctx context.Context) ([]string, error) {
+	resp, err := p.client.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	models := make([]string, 0, len(resp.Models))
+	for _, m := range resp.Models {
+		models = append(models, m.Name)
+	}
+	return models, nil
+}
+
+func toOllamaMessage(m Message) api.Message {
+	msg := api.Message{
+		Role:       m.Role,
+		Content:    m.Content,
+		ToolCallID: m.ToolCallID,
+	}
+	for _, tc := range m.ToolCalls {
+		args := api.NewToolCallFunctionArguments()
+		for k, v := range tc.Function.Arguments {
+			args.Set(k, v)
+		}
+		msg.ToolCalls = append(msg.ToolCalls, api.ToolCall{
+			ID: tc.ID,
+			Function: api.ToolCallFunction{
+				Name:      tc.Function.Name,
+				Arguments: args,
+			},
+		})
+	}
+	return msg
+}
+
+func fromOllamaMessage(m api.Message) Message {
+	msg := Message{
+		Role:       m.Role,
+		Content:    m.Content,
+		ToolCallID: m.ToolCallID,
+	}
+	for _, tc := range m.ToolCalls {
+		msg.ToolCalls = append(msg.ToolCalls, ToolCall{
+			ID: tc.ID,
+			Function: ToolCallFunction{
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments.ToMap(),
+			},
+		})
+	}
+	return msg
+}
+
+func toOllamaParams(p ToolFunctionParameters) api.ToolFunctionParameters {
+	props := api.NewToolPropertiesMap()
+	for name, prop := range p.Properties {
+		enumVals := make([]any, len(prop.Enum))
+		for i, v := range prop.Enum {
+			enumVals[i] = v
+		}
+		props.Set(name, api.ToolProperty{
+			Type:        api.PropertyType{prop.Type},
+			Description: prop.Description,
+			Enum:        enumVals,
+		})
+	}
+	return api.ToolFunctionParameters{
+		Type:       p.Type,
+		Properties: props,
+		Required:   p.Required,
+	}
 }
 
 type authTransport struct {
@@ -44,49 +169,4 @@ type authTransport struct {
 func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req.Header.Set("Authorization", "Bearer "+t.token)
 	return t.base.RoundTrip(req)
-}
-
-// safetyCheck asks the LLM whether a bash command is safe to execute without user confirmation.
-// It returns true if the LLM replies "yes", false otherwise.
-func safetyCheck(client *api.Client, model, command string) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	req := &api.ChatRequest{
-		Model: model,
-		Messages: []api.Message{
-			{
-				Role:    "system",
-				Content: "You are a security gatekeeper. A bash command will be provided. Determine if it is safe to execute automatically without user confirmation. A command is UNSAFE if it modifies, deletes, overwrites files, changes system state, installs software, or accesses sensitive data. Safe commands are read-only (e.g., ls, cat, grep, echo, pwd, df, ps). Answer only 'yes' if safe, or 'no' if unsafe. Do not provide any other output.",
-			},
-			{
-				Role:    "user",
-				Content: command,
-			},
-		},
-		Stream: boolPtr(false),
-	}
-
-	var answer string
-	var gotAnswer bool
-	respFunc := func(resp api.ChatResponse) error {
-		if resp.Message.Content != "" {
-			answer = strings.TrimSpace(strings.ToLower(resp.Message.Content))
-			gotAnswer = true
-		}
-		return nil
-	}
-
-	if err := client.Chat(ctx, req, respFunc); err != nil {
-		return false, err
-	}
-	if !gotAnswer {
-		return false, fmt.Errorf("safety check returned empty response")
-	}
-
-	return answer == "yes", nil
-}
-
-func boolPtr(b bool) *bool {
-	return &b
 }

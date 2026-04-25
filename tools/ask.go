@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ollama/ollama/api"
+	"github.com/xdm67x/simple-agent/agent"
 )
 
 type AskUserTool struct{}
@@ -19,16 +19,16 @@ func (a *AskUserTool) Description() string {
 	return "Ask the user a question and wait for their text answer. Use this only when you need clarification that cannot be found via bash or other tools. Do not use this to request file contents or directory listings — use bash for that."
 }
 
-func (a *AskUserTool) Parameters() api.ToolFunctionParameters {
-	props := api.NewToolPropertiesMap()
-	props.Set("question", api.ToolProperty{
-		Type:        api.PropertyType{"string"},
-		Description: "The question to ask the user.",
-	})
-	return api.ToolFunctionParameters{
-		Type:       "object",
-		Properties: props,
-		Required:   []string{"question"},
+func (a *AskUserTool) Parameters() agent.ToolFunctionParameters {
+	return agent.ToolFunctionParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolProperty{
+			"question": {
+				Type:        "string",
+				Description: "The question to ask the user.",
+			},
+		},
+		Required: []string{"question"},
 	}
 }
 

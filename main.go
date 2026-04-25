@@ -48,6 +48,7 @@ type (
 type model struct {
 	agent    *agent.Agent
 	renderer *glamour.TermRenderer
+	config   agent.Config
 
 	viewport viewport.Model
 	textarea textarea.Model
@@ -65,10 +66,6 @@ type model struct {
 	height int
 }
 
-type config struct {
-	Model string `json:"model"`
-}
-
 func configPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -77,21 +74,21 @@ func configPath() string {
 	return home + "/.simple-agent/config.json"
 }
 
-func loadConfig() config {
+func loadConfig() agent.Config {
 	path := configPath()
 	if path == "" {
-		return config{}
+		return agent.Config{}
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return config{}
+		return agent.Config{}
 	}
-	var c config
+	var c agent.Config
 	_ = json.Unmarshal(data, &c)
 	return c
 }
 
-func saveConfig(c config) error {
+func saveConfig(c agent.Config) error {
 	path := configPath()
 	if path == "" {
 		return fmt.Errorf("unable to determine config path")
@@ -107,15 +104,15 @@ func saveConfig(c config) error {
 }
 
 func initialModel() (*model, error) {
-	modelName := os.Getenv("OLLAMA_MODEL")
-	if modelName == "" {
-		modelName = loadConfig().Model
+	cfg := loadConfig()
+	if envModel := os.Getenv("OLLAMA_MODEL"); envModel != "" {
+		cfg.Model = envModel
 	}
-	if modelName == "" {
-		modelName = "gemma4:31b-cloud"
+	if cfg.Model == "" {
+		cfg.Model = "gemma4:31b-cloud"
 	}
 
-	a, err := agent.NewAgent(modelName, systemPrompt)
+	a, err := agent.NewAgent(cfg, systemPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create agent: %w", err)
 	}
@@ -147,6 +144,7 @@ func initialModel() (*model, error) {
 	return &model{
 		agent:    a,
 		renderer: renderer,
+		config:   cfg,
 		textarea: ta,
 		viewport: vp,
 		spinner:  sp,
@@ -378,11 +376,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if strings.HasPrefix(input, "/model ") {
 				newModel := strings.TrimSpace(strings.TrimPrefix(input, "/model "))
 				if newModel != "" {
-					m.agent.SetModel(newModel)
-					if err := saveConfig(config{Model: newModel}); err != nil {
-						m.addMessage("error", fmt.Sprintf("Failed to save config: %v", err))
+					m.config.Model = newModel
+					if err := m.agent.SetModel(newModel); err != nil {
+						m.addMessage("error", fmt.Sprintf("Failed to switch model: %v", err))
 					} else {
-						m.addMessage("agent", fmt.Sprintf("Switched to model: %s", newModel))
+						if err := saveConfig(m.config); err != nil {
+							m.addMessage("error", fmt.Sprintf("Failed to save config: %v", err))
+						} else {
+							m.addMessage("agent", fmt.Sprintf("Switched to model: %s", newModel))
+						}
 					}
 				}
 				m.textarea.SetValue("")

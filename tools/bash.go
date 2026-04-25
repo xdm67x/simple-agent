@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/ollama/ollama/api"
+	"github.com/xdm67x/simple-agent/agent"
 )
 
 type BashTool struct{}
@@ -20,16 +20,16 @@ func (b *BashTool) Description() string {
 	return "Execute a bash shell command and return its combined stdout and stderr. Use this to explore the project structure (ls, find), read files (cat, head, tail), search content (grep), run tests, or check git status. Always use this tool first when the user asks about files, code, or project context."
 }
 
-func (b *BashTool) Parameters() api.ToolFunctionParameters {
-	props := api.NewToolPropertiesMap()
-	props.Set("command", api.ToolProperty{
-		Type:        api.PropertyType{"string"},
-		Description: "The bash command to execute.",
-	})
-	return api.ToolFunctionParameters{
-		Type:       "object",
-		Properties: props,
-		Required:   []string{"command"},
+func (b *BashTool) Parameters() agent.ToolFunctionParameters {
+	return agent.ToolFunctionParameters{
+		Type: "object",
+		Properties: map[string]agent.ToolProperty{
+			"command": {
+				Type:        "string",
+				Description: "The bash command to execute.",
+			},
+		},
+		Required: []string{"command"},
 	}
 }
 

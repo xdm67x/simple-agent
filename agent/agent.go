@@ -7,18 +7,18 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"github.com/ollama/ollama/api"
 )
 
 type Registry map[string]Tool
 
 type Agent struct {
 	Model           string
+	actualModel     string
+	provider        Provider
+	config          Config
 	Registry        Registry
-	Messages        []api.Message
+	Messages        []Message
 	systemPrompt    string
-	client          *api.Client
 	OnThinkingStart func()
 	OnThinkingEnd   func()
 	OnToolCall      func(name string, args map[string]any)
@@ -27,26 +27,28 @@ type Agent struct {
 	OnAskUser       func(question string) string
 }
 
-func NewAgent(model string, systemPrompt string) (*Agent, error) {
-	client, err := newOllamaClient()
+func NewAgent(cfg Config, systemPrompt string) (*Agent, error) {
+	provider, actualModel, err := NewProvider(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	messages := make([]api.Message, 0)
+	messages := make([]Message, 0)
 	if systemPrompt != "" {
-		messages = append(messages, api.Message{
+		messages = append(messages, Message{
 			Role:    "system",
 			Content: systemPrompt,
 		})
 	}
 
 	return &Agent{
-		Model:        model,
+		Model:        cfg.Model,
+		actualModel:  actualModel,
 		Registry:     make(Registry),
 		Messages:     messages,
 		systemPrompt: systemPrompt,
-		client:       client,
+		provider:     provider,
+		config:       cfg,
 	}, nil
 }
 
@@ -58,26 +60,25 @@ func (a *Agent) ListModels() ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	resp, err := a.client.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	models := make([]string, 0, len(resp.Models))
-	for _, m := range resp.Models {
-		models = append(models, m.Name)
-	}
-	return models, nil
+	return a.provider.ListModels(ctx)
 }
 
-func (a *Agent) SetModel(model string) {
+func (a *Agent) SetModel(model string) error {
+	a.config.Model = model
+	provider, actualModel, err := NewProvider(a.config)
+	if err != nil {
+		return err
+	}
 	a.Model = model
+	a.actualModel = actualModel
+	a.provider = provider
+	return nil
 }
 
 func (a *Agent) Clear() {
-	messages := make([]api.Message, 0)
+	messages := make([]Message, 0)
 	if a.systemPrompt != "" {
-		messages = append(messages, api.Message{
+		messages = append(messages, Message{
 			Role:    "system",
 			Content: a.systemPrompt,
 		})
@@ -86,7 +87,7 @@ func (a *Agent) Clear() {
 }
 
 func (a *Agent) Run(userInput string) (string, error) {
-	a.Messages = append(a.Messages, api.Message{Role: "user", Content: userInput})
+	a.Messages = append(a.Messages, Message{Role: "user", Content: userInput})
 
 	tools := make([]Tool, 0, len(a.Registry))
 	for _, t := range a.Registry {
@@ -114,7 +115,7 @@ func (a *Agent) Run(userInput string) (string, error) {
 		for _, tc := range resp.ToolCalls {
 			tool, ok := a.Registry[tc.Function.Name]
 			if !ok {
-				a.Messages = append(a.Messages, api.Message{
+				a.Messages = append(a.Messages, Message{
 					Role:       "tool",
 					Content:    fmt.Sprintf("Error: Tool %s not found", tc.Function.Name),
 					ToolCallID: tc.ID,
@@ -122,7 +123,7 @@ func (a *Agent) Run(userInput string) (string, error) {
 				continue
 			}
 
-			args := tc.Function.Arguments.ToMap()
+			args := tc.Function.Arguments
 
 			if a.OnToolCall != nil {
 				a.OnToolCall(tool.Name(), args)
@@ -132,35 +133,35 @@ func (a *Agent) Run(userInput string) (string, error) {
 			if tool.Name() == "bash" {
 				cmdStr, _ := args["command"].(string)
 				if cmdStr != "" {
-					safe, err := safetyCheck(a.client, a.Model, cmdStr)
+					safe, err := a.safetyCheck(cmdStr)
 					if err != nil {
-						a.Messages = append(a.Messages, api.Message{
+						a.Messages = append(a.Messages, Message{
 							Role:       "tool",
 							Content:    fmt.Sprintf("Error during safety check: %v", err),
 							ToolCallID: tc.ID,
 						})
 						continue
 					}
-			if !safe {
-					var approved bool
-					if a.OnSafetyCheck != nil {
-						approved = a.OnSafetyCheck(cmdStr)
-					} else {
-						fmt.Printf("\nThe agent wants to run: %s\nExecute? (y/n): ", cmdStr)
-						reader := bufio.NewReader(os.Stdin)
-						answer, _ := reader.ReadString('\n')
-						answer = strings.TrimSpace(strings.ToLower(answer))
-						approved = answer == "y" || answer == "yes"
+					if !safe {
+						var approved bool
+						if a.OnSafetyCheck != nil {
+							approved = a.OnSafetyCheck(cmdStr)
+						} else {
+							fmt.Printf("\nThe agent wants to run: %s\nExecute? (y/n): ", cmdStr)
+							reader := bufio.NewReader(os.Stdin)
+							answer, _ := reader.ReadString('\n')
+							answer = strings.TrimSpace(strings.ToLower(answer))
+							approved = answer == "y" || answer == "yes"
+						}
+						if !approved {
+							a.Messages = append(a.Messages, Message{
+								Role:       "tool",
+								Content:    "User declined execution",
+								ToolCallID: tc.ID,
+							})
+							continue
+						}
 					}
-					if !approved {
-						a.Messages = append(a.Messages, api.Message{
-							Role:       "tool",
-							Content:    "User declined execution",
-							ToolCallID: tc.ID,
-						})
-						continue
-					}
-				}
 				}
 			}
 
@@ -177,7 +178,7 @@ func (a *Agent) Run(userInput string) (string, error) {
 				a.OnToolResult(tool.Name(), result)
 			}
 
-			a.Messages = append(a.Messages, api.Message{
+			a.Messages = append(a.Messages, Message{
 				Role:       "tool",
 				Content:    result,
 				ToolCallID: tc.ID,
@@ -186,15 +187,15 @@ func (a *Agent) Run(userInput string) (string, error) {
 	}
 }
 
-func (a *Agent) callChat(tools []Tool) (api.Message, error) {
+func (a *Agent) callChat(tools []Tool) (Message, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	apiTools := make([]api.Tool, 0, len(tools))
+	apiTools := make([]APITool, 0, len(tools))
 	for _, t := range tools {
-		apiTools = append(apiTools, api.Tool{
+		apiTools = append(apiTools, APITool{
 			Type: "function",
-			Function: api.ToolFunction{
+			Function: ToolFunction{
 				Name:        t.Name(),
 				Description: t.Description(),
 				Parameters:  t.Parameters(),
@@ -202,25 +203,46 @@ func (a *Agent) callChat(tools []Tool) (api.Message, error) {
 		})
 	}
 
-	stream := false
-	req := &api.ChatRequest{
-		Model:    a.Model,
+	req := ChatRequest{
+		Model:    a.actualModel,
 		Messages: a.Messages,
 		Tools:    apiTools,
-		Stream:   &stream,
+		Stream:   false,
 	}
 
-	var final api.Message
-	respFunc := func(resp api.ChatResponse) error {
-		final = resp.Message
-		return nil
+	return a.provider.Chat(ctx, req)
+}
+
+func (a *Agent) safetyCheck(command string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req := ChatRequest{
+		Model: a.actualModel,
+		Messages: []Message{
+			{
+				Role:    "system",
+				Content: "You are a security gatekeeper. A bash command will be provided. Determine if it is safe to execute automatically without user confirmation. A command is UNSAFE if it modifies, deletes, overwrites files, changes system state, installs software, or accesses sensitive data. Safe commands are read-only (e.g., ls, cat, grep, echo, pwd, df, ps). Answer only 'yes' if safe, or 'no' if unsafe. Do not provide any other output.",
+			},
+			{
+				Role:    "user",
+				Content: command,
+			},
+		},
+		Stream: false,
 	}
 
-	if err := a.client.Chat(ctx, req, respFunc); err != nil {
-		return api.Message{}, fmt.Errorf("chat failed: %w", err)
+	resp, err := a.provider.Chat(ctx, req)
+	if err != nil {
+		return false, err
 	}
 
-	return final, nil
+	answer := strings.TrimSpace(strings.ToLower(resp.Content))
+	if answer == "" {
+		return false, fmt.Errorf("safety check returned empty response")
+	}
+
+	return answer == "yes", nil
 }
 
 func compressOutput(s string) string {
