@@ -54,6 +54,26 @@ func (a *Agent) RegisterTool(t Tool) {
 	a.Registry[t.Name()] = t
 }
 
+func (a *Agent) ListModels() ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := a.client.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	models := make([]string, 0, len(resp.Models))
+	for _, m := range resp.Models {
+		models = append(models, m.Name)
+	}
+	return models, nil
+}
+
+func (a *Agent) SetModel(model string) {
+	a.Model = model
+}
+
 func (a *Agent) Clear() {
 	messages := make([]api.Message, 0)
 	if a.systemPrompt != "" {

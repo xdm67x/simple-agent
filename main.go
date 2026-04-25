@@ -94,11 +94,7 @@ func initialModel() (*model, error) {
 	ta.MaxHeight = 5
 
 	vp := viewport.New(80, 20)
-	vp.SetContent(`Welcome to Simple Agent! Type a message and press Enter to send.
-Commands:
-  /new  - clear conversation context
-  ctrl+c or esc - quit
-`)
+	vp.SetContent("Welcome to Simple Agent! Type a message and press Enter to send.")
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -314,6 +310,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textarea.SetValue("")
 				return m, nil
 			}
+			if input == "/model" {
+				models, err := m.agent.ListModels()
+				if err != nil {
+					m.addMessage("error", fmt.Sprintf("Failed to list models: %v", err))
+				} else {
+					var b strings.Builder
+					b.WriteString("Available models:\n")
+					for _, name := range models {
+						if name == m.agent.Model {
+							b.WriteString(fmt.Sprintf("  > %s (current)\n", name))
+						} else {
+							b.WriteString(fmt.Sprintf("  • %s\n", name))
+						}
+					}
+					b.WriteString("\nUse /model <name> to switch.")
+					m.addMessage("agent", b.String())
+				}
+				m.textarea.SetValue("")
+				return m, nil
+			}
+			if strings.HasPrefix(input, "/model ") {
+				newModel := strings.TrimSpace(strings.TrimPrefix(input, "/model "))
+				if newModel != "" {
+					m.agent.SetModel(newModel)
+					m.addMessage("agent", fmt.Sprintf("Switched to model: %s", newModel))
+				}
+				m.textarea.SetValue("")
+				return m, nil
+			}
 			m.textarea.SetValue("")
 			m.addMessage("user", input)
 			return m, tea.Batch(m.runAgent(input), waitForEvent(m.eventCh))
@@ -369,13 +394,19 @@ func (m model) View() string {
 		status = statusStyle.Render(m.status)
 	}
 
-	help := helpStyle.Render("enter: send • shift+enter: newline • /new: clear • ctrl+c: quit")
+	modelStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#7D56F4")).
+		Width(m.width)
+
+	help := helpStyle.Render("enter: send • shift+enter: newline • /new: clear • /model: models • ctrl+c: quit")
+	modelInfo := modelStyle.Render(fmt.Sprintf("Model: %s", m.agent.Model))
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		title,
 		m.viewport.View(),
 		status,
 		m.textarea.View(),
+		modelInfo,
 		help,
 	)
 }
